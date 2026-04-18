@@ -1,0 +1,80 @@
+#!/usr/bin/env mshell
+
+none station!
+none beginDate!
+none endDate!
+none tz!
+'no' noMeta!
+
+args args!
+(
+    @args match
+        []: break,
+        [arg ...args] :
+            @arg match
+                "-s" : @args
+                      match
+                        []: "-s option requires a station id." wle 1 exit,
+                        [station ...args]:
+                      end,
+                "--dfw" : 'DFW' station!,,
+                "-b" : @args
+                      match
+                        []: "-b option requires a begin date." wle 1 exit,
+                        [beginDateStr ...args]: @beginDateStr toDt
+                            match none: $"Could not parse begin datetime '{@beginDateStr}'" wle 1 exit, just beginDate: , end
+                      end,
+                "-e" : @args
+                    match
+                        []: "-e option requires a end date." wle 1 exit,
+                        [endDateStr ...args]: @endDateStr toDt match
+                            none: $"Could not parse end datetime '{@endDateStr}'" wle 1 exit,
+                            _ :> endDate!,
+                        end
+                    end,
+                "--tz" : @args
+                    match
+                    []: '--tz options requires a time zone after' wle 1 exit,
+                    [tzStr ...args] : @tzStr match
+                            'central' : 'America/Chicago',
+                            'cst' : 'America/Chicago',
+                            'utc': 'UTC',
+                            _ :> ,
+                        end tz!,,
+                    end,
+                '--nometa': 'yes' noMeta!,,
+                _ :> arg! $"Unknown argument '{@arg}'" wle 1 exit,
+            end # first arg match
+    end # Outer loop match
+) loop
+
+# Default to today if required.
+@endDate now date maybe endDate!
+
+def checkNone (any str -- ) message! match none : @message wle 1 exit, _ : end end
+
+@station  "A station is required ('-s' option)" checkNone
+@beginDate "A begin date is required ('-b' option)" checkNone
+@tz  "A time zone is required ('--tz option')" checkNone
+
+# @station str wl
+# @beginDate isoDateFmt wl
+# @endDate isoDateFmt wl
+# @tz wl
+
+{
+    'data': ['tmpf' 'relh' 'dwpf'],
+    'station': @station,
+    'year1': @beginDate year,
+    'month1': @beginDate month,
+    'day1': @beginDate day,
+    'year2': @endDate year,
+    'month2': @endDate month,
+    'day2': @endDate day,
+    'nometa': @noMeta,
+    'report_type': [3 4],
+} params!
+
+@params urlEncode queryParams!
+
+{ 'url': $"https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?{@queryParams}" } httpGet? :body? w
