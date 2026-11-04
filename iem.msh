@@ -1,28 +1,31 @@
 #!/usr/bin/env mshell
 
-none station!
-none beginDate!
-none endDate!
+none as Maybe[str] station!
+none as Maybe[datetime] beginDate!
+none as Maybe[datetime] endDate!
 none tz!
 'no' noMeta!
+false pressure!
 
 [
 'iem - Iowa Environmental Mesonet CLI'
 ''
 'USAGE:'
-' iem -s STATION_ID -b BEGIN_DATE -e END_DATE --tz TZ'
+' iem -s STATION_ID -b BEGIN_DATE -e END_DATE --tz TZ [-p]'
 ''
 'OPTIONS:'
 ' --dfw    Shorthand for DFW station'
 ' -b       Inclusive begin timestamp (YYYY-MM-DD)'
 ' -e       Exclusive end timestamp (YYYY-MM-DD)'
 ' --tz TZ  Time zone to interpret begin/end and output data. TZ can be anything from the IANA database or `utc`, `cst`, or `central`.'
+' -p       Include absolute station pressure (psia), from the altimeter setting and station elevation'
 ''
 'OUTPUT:'
 ' CSV data with:'
 ' Outdoor air dry bulb temperature (°F)'
 ' Relative humidity (%, 0-100)'
 ' Dew Point temperature (°F)'
+' Station pressure (psia, only with -p)'
 ] unlines help!
 
 args args!
@@ -36,14 +39,14 @@ args args!
                 "-s" : @args
                       match
                         []: "-s option requires a station id." wle 1 exit,
-                        [station ...args]:
+                        [stationStr ...args]: @stationStr just station!
                       end,
-                "--dfw" : 'DFW' station!,,
+                "--dfw" : 'DFW' just station!,
                 "-b" : @args
                       match
                         []: "-b option requires a begin date." wle 1 exit,
                         [beginDateStr ...args]: @beginDateStr toDt
-                            match none: $"Could not parse begin datetime '{@beginDateStr}'" wle 1 exit, just beginDate: , end
+                            match none: $"Could not parse begin datetime '{@beginDateStr}'" wle 1 exit, _: , end
                       end,
                 "-e" : @args
                     match
@@ -61,20 +64,18 @@ args args!
                             'cst' : 'America/Chicago',
                             'utc': 'UTC',
                             _ :> ,
-                        end tz!,,
+                        end just tz!,
                     end,
-                '--nometa': 'yes' noMeta!,,
+                '--nometa': 'yes' noMeta!,
+                '-p': true pressure!,
                 _ :> arg! $"Unknown argument '{@arg}'" wle 1 exit,
             end # first arg match
     end # Outer loop match
 ) loop
 
-# Default to today if required.
-@endDate now date maybe endDate!
+def checkNone (Maybe[T] str -- ) message! match none : @message wle 1 exit, _ : end end
 
-def checkNone (any str -- ) message! match none : @message wle 1 exit, _ : end end
-
-@station  "A station is required ('-s' option)" checkNone
+@station "A station is required ('-s' option)" checkNone
 @beginDate "A begin date is required ('-b' option)" checkNone
 @tz  "A time zone is required ('--tz option')" checkNone
 
@@ -83,19 +84,61 @@ def checkNone (any str -- ) message! match none : @message wle 1 exit, _ : end e
 # @endDate isoDateFmt wl
 # @tz wl
 
+# Station (absolute) pressure in psia from altimeter setting (inHg) and elevation (m).
+# ASHRAE Fundamentals Ch. 1 Eq. 3 (IP), with alti in place of 14.696 psia.
+def stnPsia (str str -- str)
+    altiStr!, elevStr!
+    @altiStr toFloat match
+        none : 'M',
+        just alti : @elevStr toFloat match
+            none : 'M',
+            just elev :
+                1.0 0.0000068754 @elev 3.28084 * * - 5.2559 pow
+                @alti 0.491154 * * 3 toFixed,
+        end,
+    end
+end
+
+# Replace the elevation column (at idx) and trailing alti column with station pressure.
+def pressureRow ([str] int -- [str])
+    row!, idx!
+    @row => [...cols alti]
+    @cols @idx nth elev!
+    @cols @idx del @alti @elev stnPsia append
+end
+
+['tmpf' 'relh' 'dwpf'] as [int | str | path] @pressure if ['alti'] extend end dataCols!
+@pressure if 'yes' else 'no' end elevFlag!
+
 {
-    'data': ['tmpf' 'relh' 'dwpf'],
-    'station': @station,
-    'year1': @beginDate year,
-    'month1': @beginDate month,
-    'day1': @beginDate day,
-    'year2': @endDate year,
-    'month2': @endDate month,
-    'day2': @endDate day,
+    'data': @dataCols,
+    'station': @station?,
+    'year1': @beginDate? year,
+    'month1': @beginDate? month,
+    'day1': @beginDate? day,
+    'year2': @endDate now date maybe year, # Default to today if required
+    'month2': @endDate? month,
+    'day2': @endDate? day,
     'nometa': @noMeta,
+    'elev': @elevFlag,
     'report_type': [3 4],
-} params!
+} as {UrlEncodable} params!
 
 @params urlEncode queryParams!
 
-{ 'url': $"https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?{@queryParams}" } httpGet? :body? w
+{ 'url': $"https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?{@queryParams}" } httpGet? :body? body!
+
+@pressure if
+    @body utf8Str parseCsv
+    # The elevation column is first without metadata, otherwise after station,valid.
+    @noMeta 'yes' = if
+        (0 pressureRow) map
+    else
+        => [header ...data]
+        @header => [...hcols _]
+        [@hcols 2 del 'pres_psia' append] @data (2 pressureRow) map +
+    end
+    toCsv wl
+else
+    @body w
+end
