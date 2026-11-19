@@ -52,8 +52,8 @@ args args!
                     match
                         []: "-e option requires a end date." wle 1 exit,
                         [endDateStr ...args]: @endDateStr toDt match
-                            none: $"Could not parse end datetime '{@endDateStr}'" wle 1 exit,
-                            _ :> endDate!,
+                            err dtErr: $"Could not parse end datetime '{@endDateStr}'.\n{@dtErr}" wle 1 exit,
+                            ok endDateParsed : @endDateParsed just endDate!,
                         end
                     end,
                 "--tz" : @args
